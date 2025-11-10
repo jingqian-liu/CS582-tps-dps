@@ -21,6 +21,8 @@ def main():
     parser.add_argument("--save_dir", default="results", type=str)
     # Policy Config
     parser.add_argument("--bias", default="force", type=str)
+    parser.add_argument("--stochastic_policy", default=False)
+    parser.add_argument("--entropy_coef", default=0.01,type=float)
     # Sampling Config
     parser.add_argument("--start_state", default="c5", type=str)
     parser.add_argument("--end_state", default="c7ax", type=str)
@@ -58,7 +60,7 @@ def main():
     )
     for rollout in range(args.num_rollouts):
         agent.sample(args, mds, temperatures[rollout])
-        loss = agent.train(args, mds)
+        loss = agent.train(args, mds, temperatures[rollout])
         logger(loss, rollout, agent.policy)
 
 
