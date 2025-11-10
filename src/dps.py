@@ -28,7 +28,8 @@ class DiffusionPathSampler:
         mds.reset()
         mds.set_temperature(temperature)
         for s in tqdm(range(1, args.num_steps + 1), desc="Sampling"):
-            bias = self.policy(position.detach(), mds.target_position).squeeze().detach()
+            bias, _, _ = self.policy(position.detach(), mds.target_position)
+            bias = bias.squeeze().detach()
             mds.step(bias)
             position, force = mds.report()
             positions[:, s] = position
@@ -43,7 +44,7 @@ class DiffusionPathSampler:
                 positions[i][: final_idx[i] + 1].cpu().numpy(),
             )
 
-    def train(self, args, mds):
+    def train(self, args, mds, temperature):
         optimizer = torch.optim.Adam(
             [
                 {"params": [self.policy.log_z], "lr": args.log_z_lr},
@@ -54,31 +55,61 @@ class DiffusionPathSampler:
         for _ in tqdm(range(args.trains_per_rollout), desc="Training"):
             positions, forces, log_tpm = self.replay.sample()
             velocities = (positions[:, 1:] - positions[:, :-1]) / args.timestep
-            biases = 1e-6 * self.policy(
+            
+            biases, biases_mean, biases_std = self.policy(
                 positions.view(-1, positions.size(-2), positions.size(-1)),
                 mds.target_position,
             )
+        
+            biases = 1e-6 * biases
             biases = biases.view(*positions.shape)
-            means = (
-                1 - args.friction * args.timestep
-            ) * velocities + args.timestep / mds.m * (forces[:, :-1] + biases[:, :-1])
-            log_bpm = mds.log_prob(velocities[:, 1:] - means[:, :-1]).mean((1, 2, 3))
-            # Our implementation is based on results in appendix A.2
+
+
+            means = (1 - args.friction * args.timestep) * velocities + args.timestep / mds.m * (forces[:, :-1] + biases[:, :-1])
+            log_bpm_path = mds.log_prob(velocities[:, 1:] - means[:, :-1]).mean((1, 2, 3))
+
+
+            # Regularization for entropy introduced by the force distribution
+            entropy = 0.0
+            entropy_coef = 0.0
+
+            if self.policy.stochastic and biases_std is not None:
+                biases_std_scaled = 1e-6 * biases_std.view(*positions.shape)
+            
+                entropy = 0.5 * torch.log(2 * torch.pi * torch.e * (biases_std_scaled ** 2))
+                entropy = entropy.sum(dim=(-1, -2, -3)).mean()
+            
+                base_entropy_coef = args.entropy_coef
+            
+                reference_temperature = 300.0
+                temperature_scale = float(temperature.item()) / reference_temperature
+                entropy_coef_effective = base_entropy_coef * temperature_scale
+
+
+            # Control variate
             if args.control_variate == "global":
                 log_z = self.policy.log_z
             elif args.control_variate == "local":
-                log_z = (log_tpm - log_bpm).mean().detach()
+                log_z = (log_tpm - log_bpm_path).mean().detach()
             elif args.control_variate == "zero":
                 log_z = 0
-            loss = (log_z + log_bpm - log_tpm).square().mean()
+        
+            
+            loss = (log_z + log_bpm_path - log_tpm).square().mean()
+            loss = loss - entropy_coef_effective * entropy
+        
             loss.backward()
+        
             for group in optimizer.param_groups:
                 torch.nn.utils.clip_grad_norm_(group["params"], args.max_grad_norm)
+        
             optimizer.step()
             optimizer.zero_grad()
             loss_sum += loss.item()
+    
         loss = loss_sum / args.trains_per_rollout
         return loss
+                
 
 
 class ReplayBuffer:
