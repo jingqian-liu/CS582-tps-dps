@@ -1,4 +1,4 @@
-# Transition Path Sampling with Diffusion Path Samplers
+# CS582 course project-Transition Path Sampling with Diffusion Path Samplers
 [![arXiv](https://img.shields.io/badge/arXiv-2405.19961-84cc16)](https://arxiv.org/abs/2405.19961)
 
 This repository contains the code to reproduce the results of [paper](https://arxiv.org/abs/2405.19961) (ICLR 2025) and [project page](https://kiyoung98.github.io/tps-dps/) for 3D videos of transition paths sampled from our diffusion path sampler.
@@ -53,14 +53,8 @@ We provide instructions to reproduce the results of aldp and train a new model. 
     ```
     bash scripts/train/aldp.sh
     ```
+- **Training**: Run the following command to start training from scratch with sampling bias from distributions
+    ```
+    bash scripts/train/aldp_force_dist.sh
+    ```
 
-## Citation
-
-```bibtex
-@article{seong2024transition,
-  title={Transition Path Sampling with Improved Off-Policy Training of Diffusion Path Samplers},
-  author={Seong, Kiyoung and Park, Seonghyun and Kim, Seonghwan and Kim, Woo Youn and Ahn, Sungsoo},
-  journal={arXiv preprint arXiv:2405.19961},
-  year={2024}
-}
-```
