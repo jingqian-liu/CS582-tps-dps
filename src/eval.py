@@ -61,7 +61,7 @@ class Eval:
         print(
             f"RMSD: {log['rmsd']:.2f} ± {log['rmsd_std']:.2f} "
             f"THP: {log['thp']:.2f} "
-            f"ETP: {log['etp']:.2f} ± {log['etp_std']:.2f}"
+            f"ETS: {log['ets']:.2f} ± {log['ets_std']:.2f}"
         )
         self.plot()
 

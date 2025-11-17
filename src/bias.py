@@ -92,16 +92,24 @@ class BiasForce(nn.Module):
                 force_mean = mean.view(*pos.shape)
                 force_mean = torch.matmul(force_mean, R)
                 force_std = std.view(*pos.shape)
+                force_std = torch.matmul(force_std, R)
 
             else:
                 force_mean = force
                 force_std = None
 
         elif self.bias == "pot":
-            pot = mean if self.stochastic else sampled
+            pot = sampled
             force = - torch.autograd.grad(pot.sum(), pos, create_graph=True)[0]
-            force_mean = force
-            force_std = std if self.stochastic else None
+            
+            if self.stochastic:
+                pot_mean = mean
+                force_mean = - torch.autograd.grad(pot_mean.sum(), pos, create_graph=True)[0]
+                # Compute force_std as the gradient of std (since force = -∇pot and pot ~ N(mean, std))
+                force_std = torch.abs(torch.autograd.grad(std.sum(), pos, create_graph=True)[0])
+            else:
+                force_mean = force
+                force_std = None
 
 
         elif self.bias == "scale":
