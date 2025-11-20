@@ -1,0 +1,12 @@
+python src/train.py \
+    --molecule hinge_protein \
+    --start_state 8FIN_chainA.pdb \
+    --end_state 8fiq_chainA.pdb \
+    --num_steps 5000 \
+    --sigma 0.5 \
+    --num_rollouts 100 \
+    --batch_size 4 \
+    --bias scale \
+    --buffer_size 200 \
+    --end_temperature 400 \
+    --temperature 400
