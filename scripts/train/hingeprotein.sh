@@ -1,7 +1,7 @@
 python src/train.py \
     --molecule hinge_protein \
-    --start_state 8FIN_chainA.pdb \
-    --end_state 8fiq_chainA.pdb \
+    --start_state state_X \
+    --end_state state_Z \
     --num_steps 5000 \
     --sigma 0.5 \
     --num_rollouts 100 \
