@@ -7,7 +7,7 @@ import wandb
 from dynamics.mds import MDs
 from utils.logging import Logger
 from dps import DiffusionPathSampler
-
+from utils.schedule_funcs import piecewise
 
 def main():
     parser = argparse.ArgumentParser()
@@ -41,6 +41,7 @@ def main():
     parser.add_argument("--buffer_size", default=1000, type=int)
     parser.add_argument("--max_grad_norm", default=1, type=int)
     parser.add_argument("--control_variate", default="global", type=str)
+    parser.add_argument("--temp_schd", default="linear", type=str)
     args = parser.parse_args()
     args.training = True
     args.save_dir = f"results/{args.date}"
@@ -53,9 +54,12 @@ def main():
     mds = MDs(args)
     logger = Logger(args, mds)
     agent = DiffusionPathSampler(args, mds)
-    temperatures = torch.linspace(
-        args.start_temperature, args.end_temperature, args.num_rollouts
-    )
+    if args.temp_schd == "piecewise":
+        temperatures = piecewise(args.start_temperature, args.end_temperature, args.num_rollouts)
+    else:
+        temperatures = torch.linspace(
+            args.start_temperature, args.end_temperature, args.num_rollouts
+        )
     for rollout in range(args.num_rollouts):
         agent.sample(args, mds, temperatures[rollout])
         loss = agent.train(args, mds)
