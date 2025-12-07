@@ -56,14 +56,16 @@ def main():
     agent = DiffusionPathSampler(args, mds)
     if args.temp_schd == "piecewise":
         temperatures = piecewise(args.start_temperature, args.end_temperature, args.num_rollouts)
+        print("Training with piecewise temperature schedule")
     else:
         temperatures = torch.linspace(
             args.start_temperature, args.end_temperature, args.num_rollouts
         )
+        print("Training with linear ramp temperature schedule")
     for rollout in range(args.num_rollouts):
         agent.sample(args, mds, temperatures[rollout])
-        loss = agent.train(args, mds)
-        logger(loss, rollout, agent.policy)
+        loss,avg_log_measure = agent.train(args, mds)
+        logger(loss, rollout, agent.policy,avg_log_measure)
 
 
 if __name__ == "__main__":

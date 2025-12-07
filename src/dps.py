@@ -51,6 +51,7 @@ class DiffusionPathSampler:
             ]
         )
         loss_sum = 0
+        avg_log_tpm_sum = 0
         for _ in tqdm(range(args.trains_per_rollout), desc="Training"):
             positions, forces, log_tpm = self.replay.sample()
             velocities = (positions[:, 1:] - positions[:, :-1]) / args.timestep
@@ -77,8 +78,10 @@ class DiffusionPathSampler:
             optimizer.step()
             optimizer.zero_grad()
             loss_sum += loss.item()
+            avg_log_tpm_sum += log_tpm.mean()
         loss = loss_sum / args.trains_per_rollout
-        return loss
+        avg_log_tpm = avg_log_tpm_sum/args.trains_per_rollout
+        return loss,avg_log_tpm
 
 
 class ReplayBuffer:

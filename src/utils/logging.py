@@ -48,7 +48,7 @@ class Logger:
 
 
 
-    def __call__(self, loss, rollout, policy):
+    def __call__(self, loss, rollout, policy,avg_log_measure):
         metrics = self.metric()
 
         # Save every 100 rollouts
@@ -57,7 +57,7 @@ class Logger:
 
 
         # Log metrics
-        log_msg = f"Rollout {rollout}: Loss = {loss:.6f}, RMSD = {metrics['rmsd']:.6f}, Best RMSD = {self.rmsd:.6f}"
+        log_msg = f"Rollout {rollout}: Loss = {loss:.6f}, Log Measure = {avg_log_measure:.6f},  RMSD = {metrics['rmsd']:.6f}, Best RMSD = {self.rmsd:.6f}"
         if metrics.get('thp') is not None:
             log_msg += f", THP = {metrics['thp']:.6f}"
         if metrics.get('ets') is not None:
