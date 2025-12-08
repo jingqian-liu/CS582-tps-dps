@@ -16,6 +16,7 @@ parser.add_argument("--molecule", default="aldp", type=str)
 
 # Policy Config
 parser.add_argument("--bias", default="force", type=str)
+parser.add_argument("--stochastic_policy", default=False)
 
 # Sampling Config
 parser.add_argument("--start_state", default="c5", type=str)
