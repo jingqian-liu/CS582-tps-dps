@@ -1,1 +1,1 @@
-python src/train.py --date Dec_8_aldp_piecewise_seed4829 --temp_schd piecewise --seed 4829
+python src/train.py --date Dec_13_aldp_piecewise_seed2 --temp_schd piecewise --seed 2
