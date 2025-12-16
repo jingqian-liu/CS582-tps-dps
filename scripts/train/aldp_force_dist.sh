@@ -1,3 +1,3 @@
 python src/train.py \
     --stochastic_policy True \
-    --entropy_coef 0.005
+    --entropy_coef 0.00000001
