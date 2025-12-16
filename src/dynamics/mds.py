@@ -24,7 +24,12 @@ class MDs:
         self.start_position = torch.matmul(self.start_position, R.transpose(-2, -1)) + t
 
     def get_md_info(self, args):
-        md = getattr(dynamics, self.molecule.title())(args, self.end_state)
+        try:
+            md = getattr(dynamics, self.molecule.title())(args, self.end_state)
+        except AttributeError:
+            print("Using the general class for new molecule")
+            md = getattr(dynamics, "Poly")(args, self.end_state)
+
         self.num_particles = md.num_particles
         self.heavy_atoms = torch.from_numpy(md.heavy_atoms).to(self.device)
         self.energy_function = md.energy_function
@@ -45,7 +50,12 @@ class MDs:
     def _init_mds(self, args):
         mds = []
         for _ in tqdm(range(self.num_samples)):
-            md = getattr(dynamics, self.molecule.title())(args, self.start_state)
+            try:
+                print(self.molecule.title())
+                md = getattr(dynamics, self.molecule.title())(args, self.start_state)
+            except AttributeError:
+                md = getattr(dynamics, "Poly")(args, self.start_state)
+
             mds.append(md)
         self.start_position = torch.tensor(
             md.position, dtype=torch.float, device=self.device
