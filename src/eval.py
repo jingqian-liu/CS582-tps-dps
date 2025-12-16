@@ -58,18 +58,11 @@ class Eval:
     def __call__(self):
         log = {}
         log.update(self.metric())
-        try:
-          print(
-              f"RMSD: {log['rmsd']:.2f} ± {log['rmsd_std']:.2f} "
-              f"THP: {log['thp']:.2f} "
-              f"ETP: {log['ets']:.2f} ± {log['ets_std']:.2f}"
-          )
-
-        except KeyError:
-          print(
-              f"RMSD: {log['rmsd']:.2f} ± {log['rmsd_std']:.2f} "
-              f"THP: {log['thp']:.2f} " 
-          ) 
+        print(
+            f"RMSD: {log['rmsd']:.2f} ± {log['rmsd_std']:.2f} "
+            f"THP: {log['thp']:.2f} "
+            f"ETS: {log['ets']:.2f} ± {log['ets_std']:.2f}"
+        )
         self.plot()
 
 

@@ -11,6 +11,9 @@ class BiasForce(nn.Module):
         self.bias = args.bias
         self.heavy_atoms = mds.heavy_atoms
         self.num_particles = mds.num_particles
+
+        self.stochastic = args.stochastic_policy
+
         if self.bias == "force":
             self.output_dim = mds.num_particles * 3
         elif self.bias == "pot":
@@ -18,9 +21,14 @@ class BiasForce(nn.Module):
         elif self.bias == "scale":
             self.output_dim = mds.num_particles
 
-        self.input_dim = mds.num_particles * (3 + 1)
 
-        if args.molecule == "aldp":
+        if self.stochastic:
+            self.output_dim = self.output_dim * 2
+
+        self.input_dim = mds.num_particles * (3 + 1)
+        print(self.output_dim)
+
+        if args.molecule == "aldp" and self.stochastic == False:
             self.mlp = nn.Sequential(
                 nn.Linear(self.input_dim, 128),
                 nn.ReLU(),
@@ -61,13 +69,70 @@ class BiasForce(nn.Module):
         input_tensor = torch.cat([input_tensor, dist], dim=-1)
         out = self.mlp(input_tensor.reshape(-1, self.input_dim))
 
+
+        if self.stochastic:
+            mean, log_std = torch.chunk(out, 2, dim = -1)
+            log_std = torch.clamp(log_std, min = -10, max = 2)
+            std = torch.exp(log_std)
+
+            eps = torch.randn_like(mean)
+            sampled = mean + eps * std
+
+        else:
+            sampled = out
+            mean = sampled
+            std = None
+
+
         if self.bias == "force":
-            force = out.view(*pos.shape)
+            force = sampled.view(*pos.shape)
             force = torch.matmul(force, R)
+            
+            if self.stochastic:
+                force_mean = mean.view(*pos.shape)
+                force_mean = torch.matmul(force_mean, R)
+                force_std = std.view(*pos.shape)
+                force_std = torch.matmul(force_std, R)
+
+            else:
+                force_mean = force
+                force_std = None
+
         elif self.bias == "pot":
-            force = -torch.autograd.grad(out.sum(), pos, create_graph=True)[0]
+            pot = sampled
+            force = - torch.autograd.grad(pot.sum(), pos, create_graph=True)[0]
+            
+            if self.stochastic:
+                pot_mean = mean
+                force_mean = - torch.autograd.grad(pot_mean.sum(), pos, create_graph=True)[0]
+                # Compute force_std as the gradient of std (since force = -∇pot and pot ~ N(mean, std))
+                force_std = torch.abs(torch.autograd.grad(std.sum(), pos, create_graph=True)[0])
+            else:
+                force_mean = force
+                force_std = None
+
+
         elif self.bias == "scale":
-            target = torch.matmul(target - t, R)
-            scale = softplus(out.view(*pos.shape[:-2], self.output_dim, 1))
-            force = scale * (target - pos)
-        return force
+            target_aligned = torch.matmul(target - t, R)
+            scale = softplus(sampled.view(*pos.shape[:-2], self.num_particles, 1))
+            force = scale * (target_aligned - pos)
+            
+            if self.stochastic:
+                scale_mean = softplus(mean.view(*pos.shape[:-2], self.num_particles, 1))
+                force_mean = scale_mean * (target_aligned - pos)
+                scale_std = std.view(*pos.shape[:-2], self.num_particles, 1)
+                force_std = scale_std * torch.abs(target_aligned - pos)
+            else:
+                force_mean = force
+                force_std = None
+
+
+        return force, force_mean, force_std
+
+
+
+
+
+
+
+
