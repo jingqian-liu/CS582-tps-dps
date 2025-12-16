@@ -19,6 +19,14 @@ We provide instructions to reproduce the results of aldp and train a new model. 
 
 ## Results
 
+The following training configurations are available:
+
+- **Baseline**: Standard TPS-DPS training
+- **No Regularization**: Force distribution training without entropy regularization
+- **Entropy Coefficient (1e-8)**: Force distribution training with entropy regularization
+- **Temperature Scheduling**: Training with adaptive temperature scheduling
+- **Entropy + Temperature**: Combined entropy regularization and temperature scheduling
+
 ### RMSD Comparison
 ![RMSD Comparison](figures/rmsd_comparison.png)
 
@@ -30,10 +38,6 @@ We provide instructions to reproduce the results of aldp and train a new model. 
 
 
 ## Contributors
-
-Shane Wang
-
-Jingqian Liu
-
-Siddharth Krishnan
-
+- Shane Wang  
+- Jingqian Liu  
+- Siddharth Krishnan
