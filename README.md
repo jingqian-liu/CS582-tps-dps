@@ -27,3 +27,9 @@ We provide instructions to reproduce the results of aldp and train a new model. 
 
 ### ETS Comparison
 ![ETS Comparison](figures/ets_comparison.png)
+
+
+## Contributors
+
+Shane Wang, Jingqian Liu, Siddharth Krishnan
+
