@@ -58,11 +58,7 @@ class Eval:
     def __call__(self):
         log = {}
         log.update(self.metric())
-        print(
-            f"RMSD: {log['rmsd']:.2f} ± {log['rmsd_std']:.2f} "
-            f"THP: {log['thp']:.2f} "
-            f"ETS: {log['ets']:.2f} ± {log['ets_std']:.2f}"
-        )
+        print(log)
         self.plot()
 
 

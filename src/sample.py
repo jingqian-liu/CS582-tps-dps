@@ -16,7 +16,7 @@ parser.add_argument("--molecule", default="aldp", type=str)
 
 # Policy Config
 parser.add_argument("--bias", default="force", type=str)
-parser.add_argument("--stochastic_policy", default=False)
+parser.add_argument("--entropy_coef", default=1e-9, type=float)
 
 # Sampling Config
 parser.add_argument("--start_state", default="c5", type=str)
@@ -34,7 +34,7 @@ args = parser.parse_args()
 if __name__ == "__main__":
     args.training = False
     args.save_dir = f"{args.save_dir}/{args.molecule}/{args.bias}"
-    for name in ["positions"]:
+    for name in ["positions","logvar","mu"]:
         if not os.path.exists(f"{args.save_dir}/{name}"):
             os.makedirs(f"{args.save_dir}/{name}")
     mds = MDs(args)

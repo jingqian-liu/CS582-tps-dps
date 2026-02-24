@@ -4,135 +4,153 @@ from torch.nn.functional import softplus
 
 from utils.utils import kabsch
 
+from torch.nn.functional import softplus
+from utils.utils import kabsch
+import torch
+import torch.nn as nn
 
-class BiasForce(nn.Module):
+class BiasForceVAE(nn.Module):
     def __init__(self, args, mds):
         super().__init__()
         self.bias = args.bias
         self.heavy_atoms = mds.heavy_atoms
         self.num_particles = mds.num_particles
-
-        self.stochastic = args.stochastic_policy
-
+        
         if self.bias == "force":
             self.output_dim = mds.num_particles * 3
         elif self.bias == "pot":
             self.output_dim = 1
         elif self.bias == "scale":
             self.output_dim = mds.num_particles
-
-
-        if self.stochastic:
-            self.output_dim = self.output_dim * 2
-
+            
         self.input_dim = mds.num_particles * (3 + 1)
-        print(self.output_dim)
-
-        if args.molecule == "aldp" and self.stochastic == False:
-            self.mlp = nn.Sequential(
-                nn.Linear(self.input_dim, 128),
+        
+        # Latent dimension
+        self.latent_dim = args.latent_dim
+        
+        if args.molecule == "aldp":
+            half_dim = self.input_dim // 2
+            
+            # Encoder
+            self.encoder = nn.Sequential(
+                nn.Linear(self.input_dim, 64),
                 nn.ReLU(),
-                nn.Linear(128, 256),
+                nn.Linear(64, 128),
                 nn.ReLU(),
-                nn.Linear(256, 256),
+                nn.Linear(128, 64),
                 nn.ReLU(),
-                nn.Linear(256, 256),
+            )
+            self.fc_mu = nn.Linear(64, self.latent_dim)
+            self.fc_logvar = nn.Linear(64, self.latent_dim)
+            
+            # Decoder
+            self.decoder = nn.Sequential(
+                nn.Linear(self.latent_dim, 64),
                 nn.ReLU(),
-                nn.Linear(256, 128),
+                nn.Linear(64, 128),
                 nn.ReLU(),
-                nn.Linear(128, self.output_dim),
+                nn.Linear(128, 64),
+                nn.ReLU(),
+                nn.Linear(64, self.output_dim),
             )
         else:
-            self.mlp = nn.Sequential(
-                nn.Linear(self.input_dim, 512),
-                nn.ReLU(),
-                nn.Linear(512, 1024),
-                nn.ReLU(),
-                nn.Linear(1024, 2048),
-                nn.ReLU(),
-                nn.Linear(2048, 1024),
+            # For larger molecules
+            self.encoder = nn.Sequential(
+                nn.Linear(self.input_dim, 1024),
                 nn.ReLU(),
                 nn.Linear(1024, 512),
                 nn.ReLU(),
-                nn.Linear(512, self.output_dim),
+                nn.Linear(512, 256),
+                nn.ReLU(),
             )
-
+            self.fc_mu = nn.Linear(256, self.latent_dim)
+            self.fc_logvar = nn.Linear(256, self.latent_dim)
+            
+            self.decoder = nn.Sequential(
+                nn.Linear(self.latent_dim, 256),
+                nn.ReLU(),
+                nn.Linear(256, 512),
+                nn.ReLU(),
+                nn.Linear(512, 1024),
+                nn.ReLU(),
+                nn.Linear(1024, self.output_dim),
+            )
+        
         self.log_z = nn.Parameter(torch.tensor(0.0))
         self.to(args.device)
-
-    def forward(self, pos, target):
+    
+    def encode(self, input_tensor):
+        """
+        Encode input to latent distribution parameters
+        """
+        h = self.encoder(input_tensor)
+        mu = self.fc_mu(h)
+        logvar = self.fc_logvar(h)
+        return mu, logvar
+    
+    def reparameterize(self, mu, logvar):
+        """
+        Reparameterization trick: z = mu + std * epsilon
+        This is used DURING TRAINING to add noise in latent space
+        """
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+    
+    def decode(self, z):
+        """
+        Decode latent vector to force prediction
+        """
+        force = self.decoder(z)
+        return force
+    
+    def forward(self, pos, target, sample=True):
+        """
+        Forward pass through VAE
+        Args:
+            pos: current positions
+            target: target positions
+            sample: whether to sample from latent distribution
+                   - True during training (adds noise)
+                   - False during inference (uses mean)
+        Returns:
+            force: predicted force
+            mu: latent mean
+            logvar: latent log variance
+        """
+        # Kabsch alignment
         R, t = kabsch(pos[:, self.heavy_atoms], target[:, self.heavy_atoms])
+        
         if self.bias == "pot":
             pos.requires_grad = True
+        
+        # Prepare input
         input_tensor = torch.matmul(pos, R.transpose(-2, -1)) + t
         dist = torch.norm(input_tensor - target, dim=-1, keepdim=True)
         input_tensor = torch.cat([input_tensor, dist], dim=-1)
-        out = self.mlp(input_tensor.reshape(-1, self.input_dim))
-
-
-        if self.stochastic:
-            mean, log_std = torch.chunk(out, 2, dim = -1)
-            log_std = torch.clamp(log_std, min = -10, max = 2)
-            std = torch.exp(log_std)
-
-            eps = torch.randn_like(mean)
-            sampled = mean + eps * std
-
+        input_flat = input_tensor.reshape(-1, self.input_dim)
+        
+        # Encode to latent distribution
+        mu, logvar = self.encode(input_flat)
+        
+        # Sample from latent distribution during training, use mean during inference
+        if sample:
+            z = self.reparameterize(mu, logvar)
         else:
-            sampled = out
-            mean = sampled
-            std = None
-
-
+            z = mu
+        
+        # Decode to force
+        force_mean = self.decode(z)
+        
+        # Apply bias type specific transformations
         if self.bias == "force":
-            force = sampled.view(*pos.shape)
+            force = force_mean.view(*pos.shape)
             force = torch.matmul(force, R)
-            
-            if self.stochastic:
-                force_mean = mean.view(*pos.shape)
-                force_mean = torch.matmul(force_mean, R)
-                force_std = std.view(*pos.shape)
-                force_std = torch.matmul(force_std, R)
-
-            else:
-                force_mean = force
-                force_std = None
-
         elif self.bias == "pot":
-            pot = sampled
-            force = - torch.autograd.grad(pot.sum(), pos, create_graph=True)[0]
-            
-            if self.stochastic:
-                pot_mean = mean
-                force_mean = - torch.autograd.grad(pot_mean.sum(), pos, create_graph=True)[0]
-                # Compute force_std as the gradient of std (since force = -∇pot and pot ~ N(mean, std))
-                force_std = torch.abs(torch.autograd.grad(std.sum(), pos, create_graph=True)[0])
-            else:
-                force_mean = force
-                force_std = None
-
-
+            force = -torch.autograd.grad(force_mean.sum(), pos, create_graph=True)[0]
         elif self.bias == "scale":
             target_aligned = torch.matmul(target - t, R)
-            scale = softplus(sampled.view(*pos.shape[:-2], self.num_particles, 1))
+            scale = softplus(force_mean.view(*pos.shape[:-2], self.output_dim, 1))
             force = scale * (target_aligned - pos)
-            
-            if self.stochastic:
-                scale_mean = softplus(mean.view(*pos.shape[:-2], self.num_particles, 1))
-                force_mean = scale_mean * (target_aligned - pos)
-                scale_std = std.view(*pos.shape[:-2], self.num_particles, 1)
-                force_std = scale_std * torch.abs(target_aligned - pos)
-            else:
-                force_mean = force
-                force_std = None
-
-
-        return force, force_mean, force_std
-
-
-
-
-
-
-
-
+        
+        return force, mu, logvar

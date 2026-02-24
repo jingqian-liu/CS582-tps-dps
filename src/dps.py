@@ -3,12 +3,12 @@ import numpy as np
 from tqdm import tqdm
 
 from utils.utils import kabsch
-from bias import BiasForce
+from bias import BiasForceVAE
 
 
 class DiffusionPathSampler:
     def __init__(self, args, mds):
-        self.policy = BiasForce(args, mds)
+        self.policy = BiasForceVAE(args, mds)
         self.target_measure = TargetPathMeasure(args, mds)
         if args.training:
             self.replay = ReplayBuffer(args, mds)
@@ -22,14 +22,29 @@ class DiffusionPathSampler:
             (args.num_samples, args.num_steps + 1, mds.num_particles, 3),
             device=args.device,
         )
+
+
+        mus = torch.zeros(
+            (args.num_samples, args.num_steps + 1, args.latent_dim), 
+            device=args.device,
+        )
+        logvars = torch.zeros(
+            (args.num_samples, args.num_steps + 1, args.latent_dim),
+            device=args.device,
+        )
+
         position, force = mds.report()
         positions[:, 0] = position
         forces[:, 0] = force
         mds.reset()
         mds.set_temperature(temperature)
         for s in tqdm(range(1, args.num_steps + 1), desc="Sampling"):
-            bias, _, _ = self.policy(position.detach(), mds.target_position)
+            bias, mu, logvar = self.policy(position.detach(), mds.target_position)
             bias = bias.squeeze().detach()
+
+            mus[:, s-1] = mu.detach()
+            logvars[:, s-1] = logvar.detach()
+
             mds.step(bias)
             position, force = mds.report()
             positions[:, s] = position
@@ -43,49 +58,64 @@ class DiffusionPathSampler:
                 f"{args.save_dir}/positions/{i}.npy",
                 positions[i][: final_idx[i] + 1].cpu().numpy(),
             )
+            np.save(
+                f"{args.save_dir}/mu/{i}.npy",
+                mus[i][: final_idx[i]].cpu().numpy(),  
+            )
+            np.save(
+                f"{args.save_dir}/logvar/{i}.npy",
+                logvars[i][: final_idx[i]].cpu().numpy(),
+            )
+
+
 
     def train(self, args, mds, temperature):
+
         optimizer = torch.optim.Adam(
             [
                 {"params": [self.policy.log_z], "lr": args.log_z_lr},
-                {"params": self.policy.mlp.parameters(), "lr": args.policy_lr},
+                {
+                    "params": list(self.policy.encoder.parameters()) + 
+                             [self.policy.fc_mu.weight, self.policy.fc_mu.bias,
+                              self.policy.fc_logvar.weight, self.policy.fc_logvar.bias] +
+                            list(self.policy.decoder.parameters()),
+                    "lr": args.policy_lr
+                },
             ]
         )
+
         loss_sum = 0
-        avg_log_tpm_sum = 0
+        loss_sum_kl = 0
+        loss_sum_tps = 0
+        loss_sum_entropy = 0
+
         for _ in tqdm(range(args.trains_per_rollout), desc="Training"):
             positions, forces, log_tpm = self.replay.sample()
             velocities = (positions[:, 1:] - positions[:, :-1]) / args.timestep
-            
-            biases, biases_mean, biases_std = self.policy(
+            biases, mu, logvar =  self.policy(
                 positions.view(-1, positions.size(-2), positions.size(-1)),
                 mds.target_position,
             )
-        
-            biases = 1e-6 * biases
-            biases = biases.view(*positions.shape)
+            biases = 1e-6 * biases.view(*positions.shape)
+            means = (
+                1 - args.friction * args.timestep
+            ) * velocities + args.timestep / mds.m * (forces[:, :-1] + biases[:, :-1])
+            log_bpm = mds.log_prob(velocities[:, 1:] - means[:, :-1]).mean((1, 2, 3))
 
 
-            means = (1 - args.friction * args.timestep) * velocities + args.timestep / mds.m * (forces[:, :-1] + biases[:, :-1])
-            log_bpm_path = mds.log_prob(velocities[:, 1:] - means[:, :-1]).mean((1, 2, 3))
+            # Entropy regularization using latent space variance
+            # Reshape logvar to [batch_size, num_frames, latent_dim]
+            logvar_reshaped = logvar.view(args.batch_size, args.num_steps + 1, self.policy.latent_dim)
 
+            # Compute entropy of latent distribution: H = 0.5 * (log(2πe) + log(var))
+            # = 0.5 * (log(2πe) + logvar)
+            entropy = 0.5 * (torch.log(2 * torch.pi * torch.e * torch.ones_like(logvar_reshaped)) + logvar_reshaped)
+            entropy = entropy.sum(dim=-1).mean()  # Sum over latent dims, mean over batch and time
 
-            # Regularization for entropy introduced by the force distribution
-            entropy = 0.0
-            entropy_coef = 0.0
-
-            if self.policy.stochastic and biases_std is not None:
-                biases_std_scaled = 1e-6 * biases_std.view(*positions.shape)
-            
-                entropy = 0.5 * torch.log(2 * torch.pi * torch.e * (biases_std_scaled ** 2))
-                entropy = entropy.sum(dim=(-1, -2, -3)).mean()
-            
-                base_entropy_coef = args.entropy_coef
-            
-                reference_temperature = 300.0
-                temperature_scale = float(temperature.item()) / reference_temperature
-                entropy_coef_effective = base_entropy_coef * temperature_scale
-
+            base_entropy_coef = args.entropy_coef
+            reference_temperature = 300.0
+            temperature_scale = float(temperature.item()) / reference_temperature
+            entropy_loss = -1.0 * base_entropy_coef * temperature_scale * entropy
 
             # Control variate
             if args.control_variate == "global":
@@ -94,23 +124,48 @@ class DiffusionPathSampler:
                 log_z = (log_tpm - log_bpm_path).mean().detach()
             elif args.control_variate == "zero":
                 log_z = 0
+
+
+            loss_tps = (log_z + log_bpm - log_tpm).square().mean()
+
+
+
+            mu_reshaped = mu.view(args.batch_size, args.num_steps + 1, self.policy.latent_dim)
         
+            # KL divergence: KL(q(z|x) || N(0,1))
+            kl_loss = -0.5 * torch.sum(1 + logvar_reshaped - mu_reshaped.pow(2) - logvar_reshaped.exp(), dim=-1)
+            kl_loss = kl_loss.mean()
+            beta = 1e-4
+            kl_loss = kl_loss * beta
             
-            loss = (log_z + log_bpm_path - log_tpm).square().mean()
-            loss = loss - entropy_coef_effective * entropy
-        
+            
+            
+            loss = loss_tps + entropy_loss + kl_loss
+
+
             loss.backward()
-        
             for group in optimizer.param_groups:
                 torch.nn.utils.clip_grad_norm_(group["params"], args.max_grad_norm)
-        
+
+
             optimizer.step()
             optimizer.zero_grad()
-            loss_sum += loss.item()
-    
+
+            loss_sum += loss.item()       
+            loss_sum_kl += kl_loss.item()
+            loss_sum_tps += loss_tps.item()
+            loss_sum_entropy += entropy_loss.item()
+
+
+
         loss = loss_sum / args.trains_per_rollout
-        return loss
-                
+        loss_kl = loss_sum_kl / args.trains_per_rollout
+        loss_tps = loss_sum_tps / args.trains_per_rollout
+        loss_entropy = loss_sum_entropy / args.trains_per_rollout
+
+        return loss, loss_kl, loss_tps, loss_entropy
+
+
 
 
 class ReplayBuffer:
