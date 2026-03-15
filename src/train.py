@@ -5,9 +5,9 @@ import torch
 import wandb
 
 from dynamics.mds import MDs
-from utils.logging import Logger
+from utils.logger import Logger
 from dps import DiffusionPathSampler
-from utils.schedule_funcs import piecewise
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -21,8 +21,7 @@ def main():
     parser.add_argument("--save_dir", default="results", type=str)
     # Policy Config
     parser.add_argument("--bias", default="force", type=str)
-    parser.add_argument("--stochastic_policy", default=False)
-    parser.add_argument("--entropy_coef", default=0.01,type=float)
+    parser.add_argument("--entropy_coef", default=1e-6, type=float)
     # Sampling Config
     parser.add_argument("--start_state", default="c5", type=str)
     parser.add_argument("--end_state", default="c7ax", type=str)
@@ -43,11 +42,10 @@ def main():
     parser.add_argument("--buffer_size", default=1000, type=int)
     parser.add_argument("--max_grad_norm", default=1, type=int)
     parser.add_argument("--control_variate", default="global", type=str)
-    parser.add_argument("--temp_schd", default="linear", type=str)
     args = parser.parse_args()
     args.training = True
     args.save_dir = f"results/{args.date}"
-    for name in ["policies", "positions"]:
+    for name in ["policies", "positions","logvar","mu"]:
         if not os.path.exists(f"{args.save_dir}/{name}"):
             os.makedirs(f"{args.save_dir}/{name}")
     if args.wandb:
@@ -56,18 +54,13 @@ def main():
     mds = MDs(args)
     logger = Logger(args, mds)
     agent = DiffusionPathSampler(args, mds)
-    if args.temp_schd == "piecewise":
-        temperatures = piecewise(args.start_temperature, args.end_temperature, args.num_rollouts)
-        print("Training with piecewise temperature schedule")
-    else:
-        temperatures = torch.linspace(
-            args.start_temperature, args.end_temperature, args.num_rollouts
-        )
-        print("Training with linear ramp temperature schedule")
+    temperatures = torch.linspace(
+        args.start_temperature, args.end_temperature, args.num_rollouts
+    )
     for rollout in range(args.num_rollouts):
         agent.sample(args, mds, temperatures[rollout])
-        loss = agent.train(args, mds, temperatures[rollout])
-        logger(loss, rollout, agent.policy)
+        loss, tps_loss, kl_loss, recon_loss = agent.train(args, mds, temperatures[rollout])
+        logger(loss, tps_loss, kl_loss, recon_loss, rollout, agent.policy)
 
 
 if __name__ == "__main__":

@@ -3,12 +3,13 @@ import numpy as np
 from tqdm import tqdm
 
 from utils.utils import kabsch
-from bias import BiasForce
+from bias import BiasForceVAE
+import torch.nn.functional as F
 
 
 class DiffusionPathSampler:
     def __init__(self, args, mds):
-        self.policy = BiasForce(args, mds)
+        self.policy = BiasForceVAE(args, mds)
         self.target_measure = TargetPathMeasure(args, mds)
         if args.training:
             self.replay = ReplayBuffer(args, mds)
@@ -22,14 +23,17 @@ class DiffusionPathSampler:
             (args.num_samples, args.num_steps + 1, mds.num_particles, 3),
             device=args.device,
         )
+
+
         position, force = mds.report()
         positions[:, 0] = position
         forces[:, 0] = force
         mds.reset()
         mds.set_temperature(temperature)
         for s in tqdm(range(1, args.num_steps + 1), desc="Sampling"):
-            bias, _, _ = self.policy(position.detach(), mds.target_position)
+            bias, mu, logvar, recon, input_flat = self.policy(position.detach(), mds.target_position)
             bias = bias.squeeze().detach()
+
             mds.step(bias)
             position, force = mds.report()
             positions[:, s] = position
@@ -44,73 +48,101 @@ class DiffusionPathSampler:
                 positions[i][: final_idx[i] + 1].cpu().numpy(),
             )
 
+
     def train(self, args, mds, temperature):
+
+        
         optimizer = torch.optim.Adam(
             [
                 {"params": [self.policy.log_z], "lr": args.log_z_lr},
-                {"params": self.policy.mlp.parameters(), "lr": args.policy_lr},
+                {
+                    "params": [p for n, p in self.policy.named_parameters()
+                        if 'log_z' not in n],
+                    "lr": args.policy_lr
+                },
             ]
         )
-        loss_sum = 0
-        avg_log_tpm_sum = 0
+
+        sum_loss = 0
+        sum_tps_loss = 0
+        sum_kl_loss = 0
+        sum_recon_loss = 0
+
         for _ in tqdm(range(args.trains_per_rollout), desc="Training"):
             positions, forces, log_tpm = self.replay.sample()
             velocities = (positions[:, 1:] - positions[:, :-1]) / args.timestep
-            
-            biases, biases_mean, biases_std = self.policy(
+            biases, mu, logvar, recon, input_flat =  self.policy(
                 positions.view(-1, positions.size(-2), positions.size(-1)),
                 mds.target_position,
             )
-        
-            biases = 1e-6 * biases
-            biases = biases.view(*positions.shape)
+            biases = 1e-6 * biases.view(*positions.shape)
+            means = (
+                1 - args.friction * args.timestep
+            ) * velocities + args.timestep / mds.m * (forces[:, :-1] + biases[:, :-1])
+            log_bpm = mds.log_prob(velocities[:, 1:] - means[:, :-1]).mean((1, 2, 3))
 
 
-            means = (1 - args.friction * args.timestep) * velocities + args.timestep / mds.m * (forces[:, :-1] + biases[:, :-1])
-            log_bpm_path = mds.log_prob(velocities[:, 1:] - means[:, :-1]).mean((1, 2, 3))
-
-
-            # Regularization for entropy introduced by the force distribution
-            entropy = 0.0
-            entropy_coef = 0.0
-
-            if self.policy.stochastic and biases_std is not None:
-                biases_std_scaled = 1e-6 * biases_std.view(*positions.shape)
-            
-                entropy = 0.5 * torch.log(2 * torch.pi * torch.e * (biases_std_scaled ** 2))
-                entropy = entropy.sum(dim=(-1, -2, -3)).mean()
-            
-                base_entropy_coef = args.entropy_coef
-            
-                reference_temperature = 300.0
-                temperature_scale = float(temperature.item()) / reference_temperature
-                entropy_coef_effective = base_entropy_coef * temperature_scale
+            # Entropy regularization using latent space variance
+            # Reshape logvar to [batch_size, num_frames, latent_dim]
+            logvar_reshaped = logvar.view(args.batch_size, args.num_steps + 1, self.policy.latent_dim)
 
 
             # Control variate
             if args.control_variate == "global":
                 log_z = self.policy.log_z
             elif args.control_variate == "local":
-                log_z = (log_tpm - log_bpm_path).mean().detach()
+                log_z = (log_tpm - log_bpm).mean().detach()
             elif args.control_variate == "zero":
                 log_z = 0
+
+
+            tps_loss = (log_z + log_bpm - log_tpm).square().mean()
+
+
+
+            mu_reshaped = mu.view(args.batch_size, args.num_steps + 1, self.policy.latent_dim)
         
+            # KL divergence: single guassian
+            kl_loss = -0.5 * torch.sum(1 + logvar_reshaped - mu_reshaped.pow(2) - logvar_reshaped.exp(), dim=-1)
+            # kl_loss shape: (batch_size, num_steps+1)
+        
+            # Average over batch and time
+            kl_loss = kl_loss.mean()
+        
+            # Beta-VAE style weighting
+            beta = args.beta_vae if hasattr(args, 'beta_vae') else 1e-4
+            kl_loss = kl_loss * beta
+
+
+            # Reconstruction loss
+            recon_loss = F.mse_loss(recon, input_flat.detach())
             
-            loss = (log_z + log_bpm_path - log_tpm).square().mean()
-            loss = loss - entropy_coef_effective * entropy
-        
+            # All loss
+            loss = tps_loss +  kl_loss + 0.01 * recon_loss
+
+
             loss.backward()
-        
             for group in optimizer.param_groups:
                 torch.nn.utils.clip_grad_norm_(group["params"], args.max_grad_norm)
-        
+
+
             optimizer.step()
             optimizer.zero_grad()
-            loss_sum += loss.item()
-    
-        loss = loss_sum / args.trains_per_rollout
-        return loss
-                
+
+            sum_loss += loss.item()       
+            sum_tps_loss += tps_loss.item()
+            sum_kl_loss += kl_loss.item()
+            sum_recon_loss += recon_loss.item()
+
+
+        sum_loss = sum_loss / args.trains_per_rollout
+        sum_tps_loss = sum_tps_loss / args.trains_per_rollout
+        sum_kl_loss = sum_kl_loss / args.trains_per_rollout
+        sum_recon_loss = sum_recon_loss / args.trains_per_rollout
+
+        return sum_loss, sum_tps_loss, sum_kl_loss, sum_recon_loss
+
+
 
 
 class ReplayBuffer:
@@ -123,6 +155,8 @@ class ReplayBuffer:
             (args.buffer_size, args.num_steps + 1, mds.num_particles, 3),
             device=args.device,
         )
+
+
         self.log_tpm = torch.zeros(args.buffer_size, device=args.device)
         self.idx = 0
         self.device = args.device
